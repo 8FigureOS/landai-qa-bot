@@ -49,8 +49,6 @@ def get_all_agents_optimized() -> List[Dict[str, any]]:
         limit = 1000
         max_records = 150000  # Scan entire database (we have 148k records)
         
-        st.info("🔍 Scanning database for all agents...")
-        
         # Discover ALL unique agents
         while offset < max_records:
             params = {
@@ -75,46 +73,34 @@ def get_all_agents_optimized() -> List[Dict[str, any]]:
                         if agent_name and agent_name.strip():
                             seen_agents.add(agent_name)
                     
-                    # Progress update every 10k records
-                    if (offset + limit) % 10000 == 0:
-                        st.info(f"   Scanned {offset + limit:,} records... Found {len(seen_agents)} unique agents so far")
-                    
                     # If we got less than limit, we've reached the end
                     if len(data) < limit:
                         break
                     
                     offset += limit
                 else:
-                    st.warning(f"⚠️ API returned status {response.status_code}. Using {len(seen_agents)} agents discovered so far.")
+                    # API error - use agents discovered so far
                     break
                     
-            except requests.exceptions.ConnectionError as e:
-                st.error("🔌 **Cannot connect to database!**")
-                st.error(f"Error: {str(e)[:200]}")
+            except requests.exceptions.ConnectionError:
+                # Connection error - return empty if no agents found yet
                 return []
             except requests.exceptions.Timeout:
-                st.warning(f"⏱️ Request timed out after {offset:,} records. Using {len(seen_agents)} agents discovered so far.")
+                # Timeout - use agents discovered so far
                 break
-            except Exception as e:
-                st.error(f"❌ Error at offset {offset:,}: {str(e)}")
+            except Exception:
+                # Other error - use agents discovered so far
                 break
         
         if not seen_agents:
-            st.error("❌ **No agents found in database**")
             return []
-        
-        st.success(f"✅ Found {len(seen_agents)} unique agents from {offset:,} records!")
         
         # Return agents sorted alphabetically (no call counts)
         agents_list = [{'name': agent, 'total_calls': 0} for agent in sorted(seen_agents)]
         
         return agents_list
         
-    except Exception as e:
-        st.error(f"❌ **Unexpected error:** {str(e)}")
-        import traceback
-        with st.expander("📋 Full error details"):
-            st.code(traceback.format_exc())
+    except Exception:
         return []
 
 @st.cache_data(ttl=CACHE_TTL_CALL_DATA, show_spinner="Loading call data...")
@@ -490,6 +476,36 @@ Keep responses concise, specific, and actionable."""
     except Exception as e:
         return f"Sorry, I encountered an error generating the coaching response: {e}"
 
+def check_authentication():
+    """Check if user is authenticated"""
+    if 'authenticated' not in st.session_state:
+        st.session_state.authenticated = False
+    
+    if not st.session_state.authenticated:
+        # Show login form
+        st.title("🔐 LandAI QA Coaching Bot - Login")
+        st.markdown("---")
+        
+        with st.form("login_form"):
+            username = st.text_input("Username", placeholder="Enter username")
+            password = st.text_input("Password", type="password", placeholder="Enter password")
+            submit = st.form_submit_button("Login", type="primary")
+            
+            if submit:
+                # Check credentials
+                if username == "landai-admin" and password == "Merxh!en4Lifn":
+                    st.session_state.authenticated = True
+                    st.success("✅ Login successful! Redirecting...")
+                    st.rerun()
+                else:
+                    st.error("❌ Invalid username or password")
+        
+        st.markdown("---")
+        st.caption("🔒 Secure access required")
+        return False
+    
+    return True
+
 def main():
     st.set_page_config(
         page_title="LandAI QA Coaching Bot",
@@ -497,6 +513,10 @@ def main():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+    
+    # Check authentication first
+    if not check_authentication():
+        return
     
     # Custom CSS for better dark theme UI
     st.markdown("""
@@ -621,6 +641,13 @@ def main():
     
     # Sidebar - Agent Selection & Filters
     with st.sidebar:
+        # Logout button at top
+        st.markdown("---")
+        if st.button("🚪 Logout", type="secondary", use_container_width=True):
+            st.session_state.authenticated = False
+            st.rerun()
+        st.markdown("---")
+        
         st.header("🎯 Agent Selection")
         
         # Fetch top agents
