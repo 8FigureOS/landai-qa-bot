@@ -576,23 +576,31 @@ def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
                 "select": "call_log_id,agent_name,log_time,campaign_name,disposition"
             }
             
-            # Add date filter if present
-            if "date_trunc('week'" in sql_lower or "current_date" in sql_lower:
-                # Filter for this week
-                week_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-                week_start = week_start - timedelta(days=week_start.weekday())
-                params["log_time"] = f"gte.{week_start.isoformat()}"
+            # Add date filter if present - but let's make it flexible
+            # Instead of filtering for "this week" only, let's get recent data
+            if "date_trunc('week'" in sql_lower or "current_date" in sql_lower or "where" in sql_lower:
+                # Get data from the last 30 days instead of just this week
+                thirty_days_ago = datetime.now() - timedelta(days=30)
+                params["log_time"] = f"gte.{thirty_days_ago.isoformat()}"
+            
+            # Also add a limit to avoid timeout
+            params["limit"] = "5000"
             
             call_response = requests.get(url, headers=HEADERS, params=params, timeout=30)
             
             if call_response.status_code not in [200, 206]:
-                return False, f"Error fetching call logs: {call_response.status_code}"
+                return False, f"Error fetching call logs: {call_response.status_code} - {call_response.text[:200]}"
             
             calls = call_response.json()
+            
+            # Debug info
+            if not calls:
+                return True, {"debug": "No calls found in database", "sql": sql_query}
+            
             call_ids = [str(c['call_log_id']) for c in calls]
             
             if not call_ids:
-                return True, []
+                return True, {"debug": f"Fetched {len(calls)} calls but no call_log_ids", "sample": calls[:2]}
             
             # Get QA evaluations for these calls
             qa_url = f"{SUPABASE_URL}/rest/v1/qa_evaluations"
@@ -604,9 +612,17 @@ def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
             qa_response = requests.get(qa_url, headers=HEADERS, params=qa_params, timeout=30)
             
             if qa_response.status_code not in [200, 206]:
-                return False, f"Error fetching QA evaluations: {qa_response.status_code}"
+                return False, f"Error fetching QA evaluations: {qa_response.status_code} - {qa_response.text[:200]}"
             
             qa_evals = qa_response.json()
+            
+            # Debug: check if we have QA evaluations
+            if not qa_evals:
+                return True, {
+                    "debug": f"Found {len(calls)} calls but no QA evaluations for them",
+                    "call_count": len(calls),
+                    "sample_calls": calls[:3]
+                }
             
             # Create a mapping of call_log_id to QA score
             qa_map = {q['call_log_id']: q['overall_score_percentage'] for q in qa_evals}
@@ -633,6 +649,15 @@ def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
                         'avg_score': round(avg_score, 2),
                         'call_count': stats['count']
                     })
+            
+            # Check if we have results
+            if not results:
+                return True, {
+                    "debug": "Query executed but no matching results",
+                    "info": f"Found {len(calls)} calls, {len(qa_evals)} QA evaluations, but couldn't match them by agent",
+                    "agents_in_calls": list(set([c.get('agent_name') for c in calls[:10]])),
+                    "qa_eval_count": len(qa_evals)
+                }
             
             # Sort by avg_score descending
             results.sort(key=lambda x: x['avg_score'], reverse=True)
