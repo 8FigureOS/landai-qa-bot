@@ -13,17 +13,10 @@ from typing import List, Dict, Optional, Tuple
 import openai
 from collections import Counter
 
-# Configuration - Use Streamlit Secrets (falls back to hardcoded for local dev)
-try:
-    # Try to load from Streamlit secrets (for deployment)
-    SUPABASE_URL = st.secrets["supabase"]["url"]
-    SUPABASE_KEY = st.secrets["supabase"]["key"]
-    OPENAI_API_KEY = st.secrets["openai"]["api_key"]
-except:
-    # Fallback to hardcoded values (for local development)
-    SUPABASE_URL = "https://yeflauigtjsexadhiqiq.supabase.co"
-    SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InllZmxhdWlndGpzZXhhZGhpcWlxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDgzNjA0MjMsImV4cCI6MjA2MzkzNjQyM30.W-6c2_rsa1TRM1S7pvEy4vT1kGx7bevpqRKgbHio1gE"
-    OPENAI_API_KEY = "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"
+# Configuration - Load from Streamlit Secrets
+SUPABASE_URL = st.secrets["supabase"]["url"]
+SUPABASE_KEY = st.secrets["supabase"]["key"]
+OPENAI_API_KEY = st.secrets["openai"]["api_key"]
 
 # Initialize OpenAI
 openai.api_key = OPENAI_API_KEY
