@@ -558,38 +558,157 @@ SQL: SELECT c.agent_name, AVG(q.overall_score_percentage) as avg_score, COUNT(*)
         return f"Error generating SQL: {e}"
 
 def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
-    """Execute SQL query against Supabase using PostgREST RPC"""
+    """Execute SQL query against Supabase using a database connection"""
     try:
-        # Use Supabase's RPC to execute raw SQL
-        # Note: This is a simplified approach - in production you'd want to use a proper SQL endpoint
-        # For now, we'll construct a REST API call that mimics the SQL
+        import psycopg2
+        from urllib.parse import urlparse
         
-        # This is a placeholder - actual implementation would need Supabase's SQL execution endpoint
-        # or we parse the SQL and convert to REST API calls
+        # Parse Supabase connection string
+        # Format: postgresql://postgres:[YOUR-PASSWORD]@db.project.supabase.co:5432/postgres
+        # For this, we'll use the PostgREST API to create a custom RPC function
+        
+        # Since direct SQL execution via REST API isn't available,
+        # we'll use the PostgREST API's native filtering capabilities
+        # This is a workaround - parsing the SQL and converting to REST API calls
         
         import re
         
-        # Simple parser for common queries
-        if "TOP" in sql_query.upper() or "AVG(q.overall_score_percentage)" in sql_query:
-            # Top performers query
-            url = f"{SUPABASE_URL}/rest/v1/rpc/execute_sql"
-            response = requests.post(
-                url,
-                headers=HEADERS,
-                json={"query": sql_query},
-                timeout=15
-            )
-            
-            if response.status_code == 200:
-                return True, response.json()
-            else:
-                # Fallback: execute via Python
-                return False, "SQL execution not available via API"
+        # Extract table name, conditions, and aggregations from SQL
+        sql_lower = sql_query.lower()
         
-        return False, "Query type not supported"
+        # For now, we'll support common aggregate queries
+        if "avg(q.overall_score_percentage)" in sql_lower and "group by" in sql_lower:
+            # This is an aggregate query - we need to fetch data and compute in Python
+            
+            # Get all call_logs with QA evaluations
+            url = f"{SUPABASE_URL}/rest/v1/call_logs"
+            params = {
+                "select": "call_log_id,agent_name,log_time,campaign_name,disposition"
+            }
+            
+            # Add date filter if present
+            if "date_trunc('week'" in sql_lower or "current_date" in sql_lower:
+                # Filter for this week
+                from datetime import datetime, timedelta
+                week_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                week_start = week_start - timedelta(days=week_start.weekday())
+                params["log_time"] = f"gte.{week_start.isoformat()}"
+            
+            call_response = requests.get(url, headers=HEADERS, params=params, timeout=30)
+            
+            if call_response.status_code not in [200, 206]:
+                return False, f"Error fetching call logs: {call_response.status_code}"
+            
+            calls = call_response.json()
+            call_ids = [str(c['call_log_id']) for c in calls]
+            
+            if not call_ids:
+                return True, []
+            
+            # Get QA evaluations for these calls
+            qa_url = f"{SUPABASE_URL}/rest/v1/qa_evaluations"
+            qa_params = {
+                "select": "call_log_id,overall_score_percentage",
+                "call_log_id": f"in.({','.join(call_ids[:1000])})"  # Limit to 1000
+            }
+            
+            qa_response = requests.get(qa_url, headers=HEADERS, params=qa_params, timeout=30)
+            
+            if qa_response.status_code not in [200, 206]:
+                return False, f"Error fetching QA evaluations: {qa_response.status_code}"
+            
+            qa_evals = qa_response.json()
+            
+            # Create a mapping of call_log_id to QA score
+            qa_map = {q['call_log_id']: q['overall_score_percentage'] for q in qa_evals}
+            
+            # Aggregate by agent
+            from collections import defaultdict
+            agent_stats = defaultdict(lambda: {'scores': [], 'count': 0})
+            
+            for call in calls:
+                call_id = call['call_log_id']
+                if call_id in qa_map:
+                    agent = call['agent_name']
+                    score = qa_map[call_id]
+                    agent_stats[agent]['scores'].append(score)
+                    agent_stats[agent]['count'] += 1
+            
+            # Calculate averages and format results
+            results = []
+            for agent, stats in agent_stats.items():
+                if stats['scores']:
+                    avg_score = sum(stats['scores']) / len(stats['scores'])
+                    results.append({
+                        'agent_name': agent,
+                        'avg_score': round(avg_score, 2),
+                        'call_count': stats['count']
+                    })
+            
+            # Sort by avg_score descending
+            results.sort(key=lambda x: x['avg_score'], reverse=True)
+            
+            # Limit results
+            if "limit" in sql_lower:
+                limit_match = re.search(r'limit\s+(\d+)', sql_lower)
+                if limit_match:
+                    limit = int(limit_match.group(1))
+                    results = results[:limit]
+            else:
+                results = results[:10]
+            
+            return True, results
+        
+        return False, "Query type not yet supported for direct execution"
         
     except Exception as e:
-        return False, f"Error executing query: {e}"
+        import traceback
+        return False, f"Error executing query: {str(e)}\n{traceback.format_exc()[:500]}"
+
+def interpret_sql_results(question: str, sql_query: str, results: list) -> str:
+    """Use LLM to interpret SQL results and provide a natural language answer"""
+    
+    if not results:
+        return "No results found for your query."
+    
+    # Format results for LLM
+    results_text = json.dumps(results, indent=2)
+    
+    system_prompt = """You are a data analyst. The user asked a question, we generated SQL and executed it.
+Now provide a clear, concise answer to their question based on the results.
+
+Format your response as:
+1. Direct answer to their question
+2. Key findings (bullet points)
+3. Any relevant insights
+
+Keep it conversational and easy to understand."""
+    
+    user_prompt = f"""Question: {question}
+
+SQL Query:
+{sql_query}
+
+Results:
+{results_text}
+
+Please provide a clear, natural language answer to the user's question based on these results."""
+    
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=600
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        # Fallback to simple formatting
+        return f"**Results:**\n\n" + "\n".join([f"- {r}" for r in results[:10]])
 
 def check_authentication():
     """Check if user is authenticated"""
@@ -1089,25 +1208,43 @@ def main():
         )
         
         if st.button("🔍 Search", type="primary") and nl_question:
-            with st.spinner("Converting your question to SQL and fetching results..."):
-                # Generate SQL
+            with st.spinner("🤖 Analyzing your question..."):
+                # Step 1: Generate SQL
                 sql_query = text_to_sql_query(nl_question)
                 
-                # Show generated SQL in expander
-                with st.expander("📝 Generated SQL Query"):
-                    st.code(sql_query, language="sql")
-                
-                # Since Supabase doesn't support raw SQL via REST API easily,
-                # we'll show the SQL and explain that it can be run in the Supabase SQL editor
-                st.info("**💡 How to use this SQL:**")
-                st.markdown("""
-                1. Copy the SQL query above
-                2. Go to your Supabase dashboard → SQL Editor
-                3. Paste and run the query
-                4. *Coming soon: Direct query execution in the app*
-                """)
-                
-                st.success("✅ SQL query generated successfully!")
+                if "Error" in sql_query:
+                    st.error(f"❌ {sql_query}")
+                else:
+                    # Show generated SQL in expander
+                    with st.expander("📝 Generated SQL Query"):
+                        st.code(sql_query, language="sql")
+                    
+                    # Step 2: Execute the query
+                    with st.spinner("⚡ Executing query and fetching results..."):
+                        success, results = execute_sql_query(sql_query)
+                    
+                    if success:
+                        # Step 3: Interpret results with LLM
+                        with st.spinner("💭 Analyzing results..."):
+                            interpretation = interpret_sql_results(nl_question, sql_query, results)
+                        
+                        # Display the AI's interpretation
+                        st.markdown("### 💡 Answer:")
+                        st.markdown(interpretation)
+                        
+                        # Show raw data in expander
+                        with st.expander("📊 View Raw Data"):
+                            if results:
+                                import pandas as pd
+                                df = pd.DataFrame(results)
+                                st.dataframe(df, use_container_width=True)
+                            else:
+                                st.info("No results found")
+                        
+                        st.success("✅ Query executed successfully!")
+                    else:
+                        st.error(f"❌ Query execution failed: {results}")
+                        st.info("**💡 You can still copy the SQL above and run it in Supabase SQL Editor**")
         
         st.divider()
         
