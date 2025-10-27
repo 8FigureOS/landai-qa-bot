@@ -1,0 +1,18 @@
+# Streamlit App Dependencies
+# For deploying landai_qa_coaching_bot_optimized.py
+
+# Core
+streamlit>=1.28.0
+python-dotenv>=1.0.0
+
+# API & Database
+requests>=2.31.0
+openai>=1.3.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+
+# Date/Time
+python-dateutil>=2.8.2
+
