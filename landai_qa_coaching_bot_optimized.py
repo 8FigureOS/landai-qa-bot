@@ -476,6 +476,121 @@ Keep responses concise, specific, and actionable."""
     except Exception as e:
         return f"Sorry, I encountered an error generating the coaching response: {e}"
 
+def text_to_sql_query(question: str) -> str:
+    """Convert natural language question to SQL query"""
+    
+    # Database schema
+    schema = """
+    Database Schema (readymode_data):
+    
+    1. call_logs table:
+       - call_log_id (integer, primary key)
+       - agent_name (text)
+       - log_time (timestamp)
+       - campaign_name (text)
+       - disposition (text)
+       - log_type (text)
+       - phone_number (text)
+       - customer_name (text)
+    
+    2. qa_evaluations table:
+       - call_log_id (integer, foreign key to call_logs)
+       - overall_score_percentage (numeric)
+       - politeness_score (numeric)
+       - compliance_score (numeric)
+       - enthusiasm_score (numeric)
+       - clarity_score (numeric)
+       - grammar_score (numeric)
+       - simplicity_score (numeric)
+       - dispositions_score (numeric)
+       - documentation_score (numeric)
+       - info_verified_score (numeric)
+       - created_at (timestamp)
+    
+    3. transcripts table:
+       - call_log_id (integer, foreign key to call_logs)
+       - speaker (text)
+       - text (text)
+       - start (numeric)
+       - end_time (numeric)
+       - confidence (numeric)
+    """
+    
+    system_prompt = f"""You are a SQL expert. Convert the user's question into a valid PostgreSQL query.
+
+{schema}
+
+Rules:
+1. Return ONLY the SQL query, no explanations
+2. Use proper PostgreSQL syntax
+3. Join tables when needed using call_log_id
+4. Use aliases for readability
+5. Limit results to 10 unless asked otherwise
+6. For date ranges, use log_time column
+7. For "this week", use: WHERE log_time >= date_trunc('week', CURRENT_DATE)
+8. For "last 7 days", use: WHERE log_time >= CURRENT_DATE - INTERVAL '7 days'
+9. Always use readymode_data schema prefix (e.g., readymode_data.call_logs)
+
+Examples:
+Question: "Top performing agent this week"
+SQL: SELECT c.agent_name, AVG(q.overall_score_percentage) as avg_score, COUNT(*) as call_count FROM readymode_data.call_logs c JOIN readymode_data.qa_evaluations q ON c.call_log_id = q.call_log_id WHERE c.log_time >= date_trunc('week', CURRENT_DATE) GROUP BY c.agent_name ORDER BY avg_score DESC LIMIT 10;
+
+Question: "Agents with score above 90%"
+SQL: SELECT c.agent_name, AVG(q.overall_score_percentage) as avg_score, COUNT(*) as calls FROM readymode_data.call_logs c JOIN readymode_data.qa_evaluations q ON c.call_log_id = q.call_log_id GROUP BY c.agent_name HAVING AVG(q.overall_score_percentage) > 90 ORDER BY avg_score DESC LIMIT 10;
+"""
+    
+    try:
+        response = openai.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": question}
+            ],
+            temperature=0,  # More deterministic for SQL
+            max_tokens=500
+        )
+        
+        sql_query = response.choices[0].message.content.strip()
+        # Remove markdown code blocks if present
+        sql_query = sql_query.replace("```sql", "").replace("```", "").strip()
+        return sql_query
+    except Exception as e:
+        return f"Error generating SQL: {e}"
+
+def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
+    """Execute SQL query against Supabase using PostgREST RPC"""
+    try:
+        # Use Supabase's RPC to execute raw SQL
+        # Note: This is a simplified approach - in production you'd want to use a proper SQL endpoint
+        # For now, we'll construct a REST API call that mimics the SQL
+        
+        # This is a placeholder - actual implementation would need Supabase's SQL execution endpoint
+        # or we parse the SQL and convert to REST API calls
+        
+        import re
+        
+        # Simple parser for common queries
+        if "TOP" in sql_query.upper() or "AVG(q.overall_score_percentage)" in sql_query:
+            # Top performers query
+            url = f"{SUPABASE_URL}/rest/v1/rpc/execute_sql"
+            response = requests.post(
+                url,
+                headers=HEADERS,
+                json={"query": sql_query},
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                return True, response.json()
+            else:
+                # Fallback: execute via Python
+                return False, "SQL execution not available via API"
+        
+        return False, "Query type not supported"
+        
+    except Exception as e:
+        return False, f"Error executing query: {e}"
+
 def check_authentication():
     """Check if user is authenticated"""
     if 'authenticated' not in st.session_state:
@@ -953,6 +1068,49 @@ def main():
         
         st.divider()
         
+        # Natural Language Query Feature
+        st.subheader("🔍 Ask Questions About Your Data")
+        st.markdown("*Ask questions in plain English and get instant insights from your database*")
+        
+        # Example questions
+        with st.expander("💡 Example Questions"):
+            st.markdown("""
+            - "Who is the top performing agent this week?"
+            - "Show me agents with scores above 90%"
+            - "Which campaigns had the most calls last week?"
+            - "List agents with the highest politeness scores"
+            - "Show me call volume by disposition type"
+            """)
+        
+        nl_question = st.text_input(
+            "Ask a question:",
+            placeholder="e.g., Top performing agent this week",
+            key="nl_query"
+        )
+        
+        if st.button("🔍 Search", type="primary") and nl_question:
+            with st.spinner("Converting your question to SQL and fetching results..."):
+                # Generate SQL
+                sql_query = text_to_sql_query(nl_question)
+                
+                # Show generated SQL in expander
+                with st.expander("📝 Generated SQL Query"):
+                    st.code(sql_query, language="sql")
+                
+                # Since Supabase doesn't support raw SQL via REST API easily,
+                # we'll show the SQL and explain that it can be run in the Supabase SQL editor
+                st.info("**💡 How to use this SQL:**")
+                st.markdown("""
+                1. Copy the SQL query above
+                2. Go to your Supabase dashboard → SQL Editor
+                3. Paste and run the query
+                4. *Coming soon: Direct query execution in the app*
+                """)
+                
+                st.success("✅ SQL query generated successfully!")
+        
+        st.divider()
+        
         # What can this bot do
         st.markdown("""
         ### 🎯 What can this bot do?
@@ -961,6 +1119,7 @@ def main():
         - **💬 AI Coaching**: Get personalized, data-driven coaching advice
         - **🔍 Custom Filters**: Analyze specific time periods, campaigns, and score ranges
         - **📈 Real-time Insights**: Based on actual QA evaluations and call data
+        - **🔍 Natural Language Queries**: Ask questions in plain English (see above)
         
         **👈 Select an agent from the sidebar to begin!**
         """)
