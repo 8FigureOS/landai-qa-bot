@@ -35,7 +35,7 @@ CACHE_TTL_AGENTS = 3600  # 1 hour
 CACHE_TTL_CALL_DATA = 900  # 15 minutes
 CACHE_TTL_METRICS = 300  # 5 minutes
 
-@st.cache_data(ttl=CACHE_TTL_AGENTS, show_spinner="Loading agents...")
+@st.cache_data(ttl=CACHE_TTL_AGENTS, show_spinner=False)
 def get_all_agents_optimized() -> List[Dict[str, any]]:
     """
     OPTIMIZED: Fetch all unique agents quickly (without call counts initially)
@@ -398,6 +398,61 @@ def get_available_campaigns(agent_name: str) -> List[str]:
     except:
         return []
 
+@st.cache_data(ttl=CACHE_TTL_METRICS, show_spinner=False)
+def get_overall_statistics() -> Dict:
+    """Get overall statistics for all agents"""
+    try:
+        # Get total calls
+        call_count_response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/call_logs",
+            headers={**HEADERS, 'Prefer': 'count=exact'},
+            params={'select': 'count'},
+            timeout=15
+        )
+        total_calls = int(call_count_response.headers.get('Content-Range', '0/0').split('/')[-1]) if call_count_response.status_code in [200, 206] else 0
+        
+        # Get QA evaluations
+        qa_count_response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/qa_evaluations",
+            headers={**HEADERS, 'Prefer': 'count=exact'},
+            params={'select': 'count'},
+            timeout=15
+        )
+        total_qa = int(qa_count_response.headers.get('Content-Range', '0/0').split('/')[-1]) if qa_count_response.status_code in [200, 206] else 0
+        
+        # Get average scores
+        qa_response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/qa_evaluations",
+            headers=HEADERS,
+            params={'select': 'overall_score_percentage', 'limit': 1000},
+            timeout=15
+        )
+        
+        avg_score = 0
+        if qa_response.status_code in [200, 206]:
+            scores = [float(q['overall_score_percentage']) for q in qa_response.json() if q.get('overall_score_percentage')]
+            avg_score = round(sum(scores) / len(scores), 1) if scores else 0
+        
+        # Get unique agents count
+        agents = get_all_agents_optimized()
+        total_agents = len(agents)
+        
+        return {
+            'total_calls': total_calls,
+            'total_qa_evaluations': total_qa,
+            'avg_qa_score': avg_score,
+            'total_agents': total_agents,
+            'qa_coverage': round((total_qa / total_calls * 100), 1) if total_calls > 0 else 0
+        }
+    except Exception as e:
+        return {
+            'total_calls': 0,
+            'total_qa_evaluations': 0,
+            'avg_qa_score': 0,
+            'total_agents': 0,
+            'qa_coverage': 0
+        }
+
 def generate_coaching_response(agent_name: str, question: str, agent_metrics: Dict, sample_calls: List[Dict]) -> str:
     """Generate AI coaching response using OpenAI with optimized context"""
     
@@ -572,7 +627,7 @@ def main():
         agents_data = get_all_agents_optimized()
         
         if agents_data:
-            st.success(f"Found {len(agents_data)} agents")
+            st.caption(f"📋 {len(agents_data)} agents available")
             
             # Show ALL agents sorted alphabetically
             # Just show agent names (no call counts for faster loading)
@@ -840,29 +895,47 @@ def main():
                 st.rerun()
     
     else:
-        # Welcome screen
+        # Welcome screen with overall statistics
         st.markdown("""
         ## Welcome to LandAI QA Coaching Bot! 🎯
         
-        **Select an agent from the sidebar to get started.**
+        **Select an agent from the sidebar to get started with personalized coaching insights.**
+        """)
         
-        ### ⚡ New Features:
+        st.divider()
         
-        - **🚀 Lightning Fast**: Optimized queries load in 2-3 seconds
-        - **📊 Top 10 Agents**: See top performers by call volume
-        - **🔍 Advanced Filters**: Filter by date, campaign, and QA score
-        - **📈 Enhanced Metrics**: Comprehensive performance dashboard
-        - **💾 Smart Caching**: Data loads instantly on subsequent visits
-        - **🎯 Pagination**: Efficient data loading
+        # Get and display overall statistics
+        st.subheader("📊 Overall Performance Dashboard")
         
-        ### What can this bot do?
+        with st.spinner("Loading statistics..."):
+            overall_stats = get_overall_statistics()
         
-        - 📊 **Performance Analysis**: View comprehensive metrics
-        - 💬 **AI Coaching**: Get personalized coaching advice
-        - 🔍 **Custom Filters**: Analyze specific time periods and campaigns
-        - 📈 **Data-Driven Insights**: Based on real QA evaluations
+        # Display metrics
+        col1, col2, col3, col4, col5 = st.columns(5)
         
-        **Select an agent to get started!**
+        with col1:
+            st.metric("Total Agents", f"{overall_stats['total_agents']:,}")
+        with col2:
+            st.metric("Total Calls", f"{overall_stats['total_calls']:,}")
+        with col3:
+            st.metric("QA Evaluations", f"{overall_stats['total_qa_evaluations']:,}")
+        with col4:
+            st.metric("Avg QA Score", f"{overall_stats['avg_qa_score']}%")
+        with col5:
+            st.metric("QA Coverage", f"{overall_stats['qa_coverage']}%")
+        
+        st.divider()
+        
+        # What can this bot do
+        st.markdown("""
+        ### 🎯 What can this bot do?
+        
+        - **📊 Performance Analysis**: View detailed metrics for each agent
+        - **💬 AI Coaching**: Get personalized, data-driven coaching advice
+        - **🔍 Custom Filters**: Analyze specific time periods, campaigns, and score ranges
+        - **📈 Real-time Insights**: Based on actual QA evaluations and call data
+        
+        **👈 Select an agent from the sidebar to begin!**
         """)
 
 if __name__ == "__main__":
