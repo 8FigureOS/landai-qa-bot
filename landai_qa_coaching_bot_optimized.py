@@ -934,8 +934,8 @@ def main():
         # Get and display overall statistics
         st.subheader("📊 Overall Performance Dashboard")
         
-        with st.spinner("Loading statistics..."):
-            overall_stats = get_overall_statistics()
+        # Load statistics silently (no spinner)
+        overall_stats = get_overall_statistics()
         
         # Display metrics
         col1, col2, col3, col4, col5 = st.columns(5)
