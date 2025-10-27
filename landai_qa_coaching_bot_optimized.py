@@ -558,20 +558,10 @@ SQL: SELECT c.agent_name, AVG(q.overall_score_percentage) as avg_score, COUNT(*)
         return f"Error generating SQL: {e}"
 
 def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
-    """Execute SQL query against Supabase using a database connection"""
+    """Execute SQL query against Supabase using REST API"""
     try:
-        import psycopg2
-        from urllib.parse import urlparse
-        
-        # Parse Supabase connection string
-        # Format: postgresql://postgres:[YOUR-PASSWORD]@db.project.supabase.co:5432/postgres
-        # For this, we'll use the PostgREST API to create a custom RPC function
-        
-        # Since direct SQL execution via REST API isn't available,
-        # we'll use the PostgREST API's native filtering capabilities
-        # This is a workaround - parsing the SQL and converting to REST API calls
-        
         import re
+        from datetime import datetime, timedelta
         
         # Extract table name, conditions, and aggregations from SQL
         sql_lower = sql_query.lower()
@@ -589,7 +579,6 @@ def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
             # Add date filter if present
             if "date_trunc('week'" in sql_lower or "current_date" in sql_lower:
                 # Filter for this week
-                from datetime import datetime, timedelta
                 week_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
                 week_start = week_start - timedelta(days=week_start.weekday())
                 params["log_time"] = f"gte.{week_start.isoformat()}"
