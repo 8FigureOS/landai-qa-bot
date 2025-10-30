@@ -730,8 +730,17 @@ Please provide a clear, natural language answer to the user's question based on 
 
 def check_authentication():
     """Check if user is authenticated"""
+    # Define authorized users (username: password)
+    AUTHORIZED_USERS = {
+        "landai-admin": "Merxh!en4Lifn",
+        "qa-manager": "QA@Manager2025!",
+        "coach-lead": "Coach#Lead2025",
+        "supervisor": "Super@Visor2025"
+    }
+    
     if 'authenticated' not in st.session_state:
         st.session_state.authenticated = False
+        st.session_state.username = None
     
     if not st.session_state.authenticated:
         # Show login form
@@ -745,9 +754,10 @@ def check_authentication():
             
             if submit:
                 # Check credentials
-                if username == "landai-admin" and password == "Merxh!en4Lifn":
+                if username in AUTHORIZED_USERS and AUTHORIZED_USERS[username] == password:
                     st.session_state.authenticated = True
-                    st.success("✅ Login successful! Redirecting...")
+                    st.session_state.username = username
+                    st.success(f"✅ Welcome, {username}! Redirecting...")
                     st.rerun()
                 else:
                     st.error("❌ Invalid username or password")
@@ -893,10 +903,13 @@ def main():
     
     # Sidebar - Agent Selection & Filters
     with st.sidebar:
-        # Logout button at top
+        # Show logged-in user and logout button at top
         st.markdown("---")
+        if 'username' in st.session_state and st.session_state.username:
+            st.caption(f"👤 Logged in as: **{st.session_state.username}**")
         if st.button("🚪 Logout", type="secondary", use_container_width=True):
             st.session_state.authenticated = False
+            st.session_state.username = None
             st.rerun()
         st.markdown("---")
         
