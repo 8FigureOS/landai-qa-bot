@@ -520,23 +520,27 @@ def text_to_sql_query(question: str) -> str:
 
 {schema}
 
-Rules:
-1. Return ONLY the SQL query, no explanations
-2. Use proper PostgreSQL syntax
-3. Join tables when needed using call_log_id
-4. Use aliases for readability
-5. Limit results to 10 unless asked otherwise
-6. For date ranges, use log_time column
-7. For "this week", use: WHERE log_time >= date_trunc('week', CURRENT_DATE)
-8. For "last 7 days", use: WHERE log_time >= CURRENT_DATE - INTERVAL '7 days'
-9. Always use readymode_data schema prefix (e.g., readymode_data.call_logs)
+CRITICAL RULES:
+1. **ALWAYS start queries from the qa_evaluations table first** - only QA-evaluated calls should be included
+2. Join to call_logs ONLY to get additional fields like agent_name, log_time, campaign_name
+3. Return ONLY the SQL query, no explanations
+4. Use proper PostgreSQL syntax
+5. Use aliases for readability (q for qa_evaluations, c for call_logs)
+6. Limit results to 10 unless asked otherwise
+7. For date ranges, use log_time column from call_logs after joining
+8. For "this week", use: WHERE c.log_time >= date_trunc('week', CURRENT_DATE)
+9. For "last 7 days", use: WHERE c.log_time >= CURRENT_DATE - INTERVAL '7 days'
+10. Always use readymode_data schema prefix (e.g., readymode_data.qa_evaluations)
 
 Examples:
 Question: "Top performing agent this week"
-SQL: SELECT c.agent_name, AVG(q.overall_score_percentage) as avg_score, COUNT(*) as call_count FROM readymode_data.call_logs c JOIN readymode_data.qa_evaluations q ON c.call_log_id = q.call_log_id WHERE c.log_time >= date_trunc('week', CURRENT_DATE) GROUP BY c.agent_name ORDER BY avg_score DESC LIMIT 10;
+SQL: SELECT c.agent_name, AVG(q.overall_score_percentage) as avg_score, COUNT(*) as call_count FROM readymode_data.qa_evaluations q JOIN readymode_data.call_logs c ON q.call_log_id = c.call_log_id WHERE c.log_time >= date_trunc('week', CURRENT_DATE) GROUP BY c.agent_name ORDER BY avg_score DESC LIMIT 10;
 
 Question: "Agents with score above 90%"
-SQL: SELECT c.agent_name, AVG(q.overall_score_percentage) as avg_score, COUNT(*) as calls FROM readymode_data.call_logs c JOIN readymode_data.qa_evaluations q ON c.call_log_id = q.call_log_id GROUP BY c.agent_name HAVING AVG(q.overall_score_percentage) > 90 ORDER BY avg_score DESC LIMIT 10;
+SQL: SELECT c.agent_name, AVG(q.overall_score_percentage) as avg_score, COUNT(*) as calls FROM readymode_data.qa_evaluations q JOIN readymode_data.call_logs c ON q.call_log_id = c.call_log_id GROUP BY c.agent_name HAVING AVG(q.overall_score_percentage) > 90 ORDER BY avg_score DESC LIMIT 10;
+
+Question: "Which campaigns had the most QA evaluated calls?"
+SQL: SELECT c.campaign_name, COUNT(*) as qa_eval_count, AVG(q.overall_score_percentage) as avg_score FROM readymode_data.qa_evaluations q JOIN readymode_data.call_logs c ON q.call_log_id = c.call_log_id GROUP BY c.campaign_name ORDER BY qa_eval_count DESC LIMIT 10;
 """
     
     try:
@@ -570,43 +574,11 @@ def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
         if "avg(q.overall_score_percentage)" in sql_lower and "group by" in sql_lower:
             # This is an aggregate query - we need to fetch data and compute in Python
             
-            # Get all call_logs with QA evaluations
-            url = f"{SUPABASE_URL}/rest/v1/call_logs"
-            params = {
-                "select": "call_log_id,agent_name,log_time,campaign_name,disposition"
-            }
-            
-            # Add date filter if present - but let's make it flexible
-            # Instead of filtering for "this week" only, let's get recent data
-            if "date_trunc('week'" in sql_lower or "current_date" in sql_lower or "where" in sql_lower:
-                # Get data from the last 30 days instead of just this week
-                thirty_days_ago = datetime.now() - timedelta(days=30)
-                params["log_time"] = f"gte.{thirty_days_ago.isoformat()}"
-            
-            # Also add a limit to avoid timeout
-            params["limit"] = "5000"
-            
-            call_response = requests.get(url, headers=HEADERS, params=params, timeout=30)
-            
-            if call_response.status_code not in [200, 206]:
-                return False, f"Error fetching call logs: {call_response.status_code} - {call_response.text[:200]}"
-            
-            calls = call_response.json()
-            
-            # Debug info
-            if not calls:
-                return True, {"debug": "No calls found in database", "sql": sql_query}
-            
-            call_ids = [str(c['call_log_id']) for c in calls]
-            
-            if not call_ids:
-                return True, {"debug": f"Fetched {len(calls)} calls but no call_log_ids", "sample": calls[:2]}
-            
-            # Get QA evaluations for these calls
+            # ALWAYS START FROM qa_evaluations table first (only QA-evaluated calls)
             qa_url = f"{SUPABASE_URL}/rest/v1/qa_evaluations"
             qa_params = {
                 "select": "call_log_id,overall_score_percentage",
-                "call_log_id": f"in.({','.join(call_ids[:1000])})"  # Limit to 1000
+                "limit": "5000"  # Get up to 5000 QA evaluations
             }
             
             qa_response = requests.get(qa_url, headers=HEADERS, params=qa_params, timeout=30)
@@ -619,9 +591,41 @@ def execute_sql_query(sql_query: str) -> Tuple[bool, any]:
             # Debug: check if we have QA evaluations
             if not qa_evals:
                 return True, {
-                    "debug": f"Found {len(calls)} calls but no QA evaluations for them",
-                    "call_count": len(calls),
-                    "sample_calls": calls[:3]
+                    "debug": "No QA evaluations found in database",
+                    "sql": sql_query,
+                    "note": "The qa_evaluations table appears to be empty"
+                }
+            
+            # Get the call_log_ids from QA evaluations
+            call_ids = [str(q['call_log_id']) for q in qa_evals]
+            
+            # Now get call_logs for these QA-evaluated calls only
+            url = f"{SUPABASE_URL}/rest/v1/call_logs"
+            params = {
+                "select": "call_log_id,agent_name,log_time,campaign_name,disposition",
+                "call_log_id": f"in.({','.join(call_ids[:1000])})"  # Limit to 1000 for URL length
+            }
+            
+            # Add date filter if present - but let's make it flexible
+            # Instead of filtering for "this week" only, let's get recent data
+            if "date_trunc('week'" in sql_lower or "current_date" in sql_lower or "where" in sql_lower:
+                # Get data from the last 30 days instead of just this week
+                thirty_days_ago = datetime.now() - timedelta(days=30)
+                params["log_time"] = f"gte.{thirty_days_ago.isoformat()}"
+            
+            call_response = requests.get(url, headers=HEADERS, params=params, timeout=30)
+            
+            if call_response.status_code not in [200, 206]:
+                return False, f"Error fetching call logs: {call_response.status_code} - {call_response.text[:200]}"
+            
+            calls = call_response.json()
+            
+            # Debug info
+            if not calls:
+                return True, {
+                    "debug": f"Found {len(qa_evals)} QA evaluations but no matching call logs",
+                    "qa_count": len(qa_evals),
+                    "sample_qa_ids": call_ids[:5]
                 }
             
             # Create a mapping of call_log_id to QA score
