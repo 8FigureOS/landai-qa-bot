@@ -95,8 +95,12 @@ def get_all_agents_optimized() -> List[Dict[str, any]]:
         if not seen_agents:
             return []
         
+        # Filter out specific agents to exclude
+        excluded_agents = {'Charlie', 'Quality Assurance', 'Rose'}
+        filtered_agents = seen_agents - excluded_agents
+        
         # Return agents sorted alphabetically (no call counts)
-        agents_list = [{'name': agent, 'total_calls': 0} for agent in sorted(seen_agents)]
+        agents_list = [{'name': agent, 'total_calls': 0} for agent in sorted(filtered_agents)]
         
         return agents_list
         
@@ -386,31 +390,63 @@ def get_available_campaigns(agent_name: str) -> List[str]:
 
 @st.cache_data(ttl=CACHE_TTL_METRICS, show_spinner=False)
 def get_overall_statistics() -> Dict:
-    """Get overall statistics for all agents"""
+    """Get overall statistics for all agents (excluding Charlie, Quality Assurance, Rose)"""
     try:
-        # Get total calls
+        # Excluded agents
+        excluded_agents = ['Charlie', 'Quality Assurance', 'Rose']
+        
+        # Get total calls (excluding specific agents)
         call_count_response = requests.get(
             f"{SUPABASE_URL}/rest/v1/call_logs",
             headers={**HEADERS, 'Prefer': 'count=exact'},
-            params={'select': 'count'},
+            params={
+                'select': 'count',
+                'agent_name': f'not.in.({",".join(excluded_agents)})'
+            },
             timeout=15
         )
         total_calls = int(call_count_response.headers.get('Content-Range', '0/0').split('/')[-1]) if call_count_response.status_code in [200, 206] else 0
         
-        # Get QA evaluations
+        # Get call_log_ids for excluded agents to filter them out from QA stats
+        excluded_call_ids = []
+        try:
+            excluded_calls_response = requests.get(
+                f"{SUPABASE_URL}/rest/v1/call_logs",
+                headers=HEADERS,
+                params={
+                    'select': 'call_log_id',
+                    'agent_name': f'in.({",".join(excluded_agents)})',
+                    'limit': 5000
+                },
+                timeout=10
+            )
+            if excluded_calls_response.status_code in [200, 206]:
+                excluded_call_ids = [str(c['call_log_id']) for c in excluded_calls_response.json()]
+        except:
+            pass
+        
+        # Get QA evaluations (excluding specific agents)
+        qa_params = {'select': 'count'}
+        if excluded_call_ids:
+            qa_params['call_log_id'] = f'not.in.({",".join(excluded_call_ids)})'
+        
         qa_count_response = requests.get(
             f"{SUPABASE_URL}/rest/v1/qa_evaluations",
             headers={**HEADERS, 'Prefer': 'count=exact'},
-            params={'select': 'count'},
+            params=qa_params,
             timeout=15
         )
         total_qa = int(qa_count_response.headers.get('Content-Range', '0/0').split('/')[-1]) if qa_count_response.status_code in [200, 206] else 0
         
-        # Get average scores
+        # Get average scores (excluding specific agents)
+        qa_score_params = {'select': 'overall_score_percentage', 'limit': 1000}
+        if excluded_call_ids:
+            qa_score_params['call_log_id'] = f'not.in.({",".join(excluded_call_ids[:500])})'  # Limit to avoid URL length issues
+        
         qa_response = requests.get(
             f"{SUPABASE_URL}/rest/v1/qa_evaluations",
             headers=HEADERS,
-            params={'select': 'overall_score_percentage', 'limit': 1000},
+            params=qa_score_params,
             timeout=15
         )
         
