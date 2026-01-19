@@ -123,7 +123,7 @@ def get_agent_call_data_optimized(
     try:
         # STEP 1: Get call_log_ids for this agent with filters
         call_params = {
-            "select": "call_log_id,log_time,phone_number,customer_name,disposition,campaign_name",
+            "select": "call_log_id,log_time,phone_number,customer_name,disposition,campaign_name,recording_url",
             "agent_name": f"eq.{agent_name}",
             "limit": 1000  # Get more to ensure we have enough with QA evals
         }
@@ -229,6 +229,7 @@ def get_agent_call_data_optimized(
                 'customer_name': call_log.get('customer_name'),
                 'disposition': call_log.get('disposition'),
                 'campaign_name': call_log.get('campaign_name'),
+                'recording_url': call_log.get('recording_url'),
                 'qa_evaluation': qa,
                 'transcript': full_transcript
             })
@@ -1159,6 +1160,139 @@ def main():
                     st.write(f"**{campaign}**: {count:,} calls ({percentage:.1f}%)")
             else:
                 st.write("No campaign data available")
+        
+        st.divider()
+        
+        # Recent Calls with Recordings Section
+        st.subheader("🎧 Recent Calls with Recordings")
+        st.markdown("*Listen to actual calls to understand the QA scores in context*")
+        
+        if st.session_state.call_data:
+            # Filter calls that have QA evaluations and recordings
+            calls_with_recordings = [
+                call for call in st.session_state.call_data 
+                if call.get('qa_evaluation') and call.get('recording_url')
+            ]
+            
+            if calls_with_recordings:
+                # Show top 10 most recent calls
+                display_calls = calls_with_recordings[:10]
+                
+                for idx, call in enumerate(display_calls, 1):
+                    qa_eval = call.get('qa_evaluation', {})
+                    score = qa_eval.get('overall_score_percentage', 'N/A')
+                    recording_url = call.get('recording_url', '')
+                    log_time = call.get('log_time', '')
+                    disposition = call.get('disposition', 'N/A')
+                    campaign = call.get('campaign_name', 'N/A')
+                    customer = call.get('customer_name', 'N/A')
+                    
+                    # Format date if available
+                    date_str = ""
+                    if log_time:
+                        try:
+                            from datetime import datetime
+                            if isinstance(log_time, str):
+                                dt = datetime.fromisoformat(log_time.replace('Z', '+00:00'))
+                                date_str = dt.strftime("%Y-%m-%d %H:%M")
+                            else:
+                                date_str = str(log_time)
+                        except:
+                            date_str = str(log_time)[:16] if log_time else ""
+                    
+                    # Create a card-like display for each call
+                    with st.container():
+                        col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                        
+                        with col1:
+                            st.markdown(f"**Call #{idx}**")
+                            if date_str:
+                                st.caption(f"📅 {date_str}")
+                            if customer and customer != 'N/A':
+                                st.caption(f"👤 {customer}")
+                        
+                        with col2:
+                            # Score with color coding
+                            if isinstance(score, (int, float)):
+                                if score >= 90:
+                                    score_color = "🟢"
+                                elif score >= 75:
+                                    score_color = "🟡"
+                                else:
+                                    score_color = "🔴"
+                                st.markdown(f"**{score_color} Score: {score}%**")
+                            else:
+                                st.markdown(f"**Score: {score}**")
+                            
+                            st.caption(f"📞 {disposition}")
+                            if campaign and campaign != 'N/A':
+                                st.caption(f"🎯 {campaign}")
+                        
+                        with col3:
+                            # QA Criteria breakdown (if available)
+                            if qa_eval:
+                                criteria = []
+                                if qa_eval.get('politeness_score'):
+                                    pol = float(qa_eval.get('politeness_score', 0) or 0) * 100
+                                    criteria.append(f"Politeness: {pol:.0f}%")
+                                if qa_eval.get('clarity_score'):
+                                    clar = float(qa_eval.get('clarity_score', 0) or 0) * 100
+                                    criteria.append(f"Clarity: {clar:.0f}%")
+                                
+                                if criteria:
+                                    st.caption(" | ".join(criteria))
+                        
+                        with col4:
+                            # Recording link button
+                            if recording_url:
+                                # Use markdown link that opens in new tab
+                                st.markdown(f'<a href="{recording_url}" target="_blank" style="display: inline-block; text-decoration: none; padding: 0.5rem 1rem; background: linear-gradient(135deg, #FF4B4B 0%, #E63946 100%); color: white; border-radius: 8px; font-weight: 600; text-align: center;">🎧 Listen</a>', unsafe_allow_html=True)
+                            else:
+                                st.caption("❌ No recording")
+                        
+                        st.markdown("---")
+                
+                # Show additional calls in expander if more than 10
+                if len(calls_with_recordings) > 10:
+                    st.caption(f"*Showing 10 of {len(calls_with_recordings)} calls with recordings*")
+                    with st.expander(f"📋 View All {len(calls_with_recordings)} Calls"):
+                        for idx, call in enumerate(calls_with_recordings[10:], 11):
+                            qa_eval = call.get('qa_evaluation', {})
+                            score = qa_eval.get('overall_score_percentage', 'N/A')
+                            recording_url = call.get('recording_url', '')
+                            log_time = call.get('log_time', '')
+                            disposition = call.get('disposition', 'N/A')
+                            
+                            date_str = ""
+                            if log_time:
+                                try:
+                                    from datetime import datetime
+                                    if isinstance(log_time, str):
+                                        dt = datetime.fromisoformat(log_time.replace('Z', '+00:00'))
+                                        date_str = dt.strftime("%Y-%m-%d %H:%M")
+                                    else:
+                                        date_str = str(log_time)
+                                except:
+                                    date_str = str(log_time)[:16] if log_time else ""
+                            
+                            col1, col2, col3 = st.columns([3, 2, 1])
+                            with col1:
+                                st.write(f"**Call #{idx}** - {date_str} | {disposition}")
+                            with col2:
+                                if isinstance(score, (int, float)):
+                                    st.write(f"Score: **{score}%**")
+                                else:
+                                    st.write(f"Score: {score}")
+                            with col3:
+                                if recording_url:
+                                    st.markdown(f'<a href="{recording_url}" target="_blank" style="text-decoration: none; color: #FF4B4B; font-weight: 600;">🎧 Listen</a>', unsafe_allow_html=True)
+                                else:
+                                    st.caption("No recording")
+                            st.markdown("---")
+            else:
+                st.info("No calls with both QA evaluations and recordings found.")
+        else:
+            st.info("No call data available. Please apply filters or select a different agent.")
         
         st.divider()
         
