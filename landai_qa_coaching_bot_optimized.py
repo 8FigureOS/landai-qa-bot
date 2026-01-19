@@ -772,7 +772,8 @@ def check_authentication():
         "landai-admin": "Merxh!en4Lifn",
         "qa-manager": "QA@Manager2025!",
         "coach-lead": "Coach#Lead2025",
-        "supervisor": "Super@Visor2025"
+        "supervisor": "Super@Visor2025",
+        "maria": "Merxh!en4LifnLAND"
     }
     
     if 'authenticated' not in st.session_state:
