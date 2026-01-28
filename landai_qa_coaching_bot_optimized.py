@@ -113,6 +113,7 @@ def get_agent_call_data_optimized(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     campaign: Optional[str] = None,
+    disposition: Optional[str] = None,
     min_score: Optional[float] = None,
     max_score: Optional[float] = None,
     limit: int = 20
@@ -139,6 +140,10 @@ def get_agent_call_data_optimized(
         # Apply campaign filter
         if campaign and campaign != "All Campaigns":
             call_params['campaign_name'] = f'eq.{campaign}'
+        
+        # Apply disposition filter
+        if disposition and disposition != "All Dispositions":
+            call_params['disposition'] = f'eq.{disposition}'
         
         call_logs_url = f"{SUPABASE_URL}/rest/v1/call_logs"
         call_response = requests.get(call_logs_url, headers=HEADERS, params=call_params, timeout=20)
@@ -385,6 +390,26 @@ def get_available_campaigns(agent_name: str) -> List[str]:
         if response.status_code == 200:
             campaigns = list(set([r['campaign_name'] for r in response.json() if r.get('campaign_name')]))
             return sorted(campaigns)
+        return []
+    except:
+        return []
+
+@st.cache_data(ttl=CACHE_TTL_CALL_DATA)
+def get_available_dispositions(agent_name: str) -> List[str]:
+    """Get list of unique dispositions for an agent"""
+    try:
+        url = f"{SUPABASE_URL}/rest/v1/call_logs"
+        params = {
+            "select": "disposition",
+            "agent_name": f"eq.{agent_name}",
+            "disposition": "not.is.null",
+            "limit": 100
+        }
+        
+        response = requests.get(url, headers=HEADERS, params=params, timeout=10)
+        if response.status_code == 200:
+            dispositions = list(set([r['disposition'] for r in response.json() if r.get('disposition')]))
+            return sorted(dispositions)
         return []
     except:
         return []
@@ -1006,6 +1031,14 @@ def main():
                     help="Filter by campaign"
                 )
                 
+                # Disposition filter
+                available_dispositions = get_available_dispositions(st.session_state.selected_agent)
+                selected_disposition = st.selectbox(
+                    "Disposition",
+                    options=["All Dispositions"] + available_dispositions,
+                    help="Filter by call disposition (e.g., live transfer, not interested, etc.)"
+                )
+                
                 # QA Score filter
                 st.subheader("QA Score Range")
                 score_range = st.slider(
@@ -1034,6 +1067,7 @@ def main():
                             start_date=start_date_str,
                             end_date=end_date_str,
                             campaign=selected_campaign if selected_campaign != "All Campaigns" else None,
+                            disposition=selected_disposition if selected_disposition != "All Dispositions" else None,
                             min_score=score_range[0] if score_range != (0, 100) else None,
                             max_score=score_range[1] if score_range != (0, 100) else None,
                             limit=20
@@ -1050,6 +1084,7 @@ def main():
                             'start_date': start_date_str,
                             'end_date': end_date_str,
                             'campaign': selected_campaign,
+                            'disposition': selected_disposition,
                             'score_range': score_range
                         }
                     
@@ -1085,6 +1120,9 @@ def main():
                     
                     if filters.get('campaign') and filters['campaign'] != "All Campaigns":
                         st.write(f"🎯 Campaign: {filters['campaign']}")
+                    
+                    if filters.get('disposition') and filters['disposition'] != "All Dispositions":
+                        st.write(f"📞 Disposition: {filters['disposition']}")
                     
                     if filters.get('score_range') and filters['score_range'] != (0, 100):
                         st.write(f"📊 Score: {filters['score_range'][0]}% - {filters['score_range'][1]}%")
