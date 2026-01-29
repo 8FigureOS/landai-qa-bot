@@ -142,9 +142,11 @@ def get_agent_call_data_optimized(
     """
     try:
         # STEP 1: Get call_log_ids for this agent with filters
+        # Normalize agent_name to ensure exact match
+        normalized_agent_name = agent_name.strip()
         call_params = {
-            "select": "call_log_id,log_time,phone_number,customer_name,disposition,campaign_name,recording_url",
-            "agent_name": f"eq.{agent_name}",
+            "select": "call_log_id,log_time,phone_number,customer_name,disposition,campaign_name,recording_url,agent_name",
+            "agent_name": f"eq.{normalized_agent_name}",
             "limit": 1000  # Get more to ensure we have enough with QA evals
         }
         
@@ -235,7 +237,9 @@ def get_agent_call_data_optimized(
                     transcripts[call_id].append(transcript['text'])
         
         # STEP 4: Combine data (only for calls with QA evaluations)
+        # CRITICAL: Filter to ensure ONLY calls for the selected agent are returned
         combined_data = []
+        
         for qa in qa_data:
             call_id = qa['call_log_id']
             call_log = call_logs_dict.get(call_id)
@@ -243,11 +247,18 @@ def get_agent_call_data_optimized(
             if not call_log:
                 continue  # Skip if call log not found
             
+            # CRITICAL FILTER: Verify agent_name matches exactly (case-insensitive, trimmed)
+            call_agent_name = call_log.get('agent_name', '').strip()
+            if call_agent_name.lower() != normalized_agent_name.lower():
+                # Skip this call - agent mismatch (data inconsistency protection)
+                continue
+            
             call_transcript_parts = transcripts.get(call_id, [])
             full_transcript = " ".join(call_transcript_parts)[:1000] if call_transcript_parts else "No transcript available"
             
             combined_data.append({
                 'call_log_id': call_id,
+                'agent_name': call_agent_name,  # Include agent_name for display
                 'log_time': call_log.get('log_time'),
                 'phone_number': call_log.get('phone_number'),
                 'customer_name': call_log.get('customer_name'),
@@ -277,8 +288,10 @@ def get_agent_metrics_optimized(
     """
     try:
         # Build base query for call logs
+        # Normalize agent_name to ensure exact match
+        normalized_agent_name = agent_name.strip()
         base_params = {
-            "agent_name": f"eq.{agent_name}",
+            "agent_name": f"eq.{normalized_agent_name}",
             "limit": 1000
         }
         
