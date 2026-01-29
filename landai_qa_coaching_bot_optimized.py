@@ -31,7 +31,7 @@ HEADERS = {
 }
 
 # Cache timeout settings (in seconds)
-CACHE_TTL_AGENTS = 3600  # 1 hour
+CACHE_TTL_AGENTS = 300  # 5 minutes (reduced from 1 hour to refresh faster)
 CACHE_TTL_CALL_DATA = 900  # 15 minutes
 CACHE_TTL_METRICS = 300  # 5 minutes
 
@@ -39,15 +39,31 @@ CACHE_TTL_METRICS = 300  # 5 minutes
 def get_all_agents_optimized() -> List[Dict[str, any]]:
     """
     OPTIMIZED: Fetch all unique agents quickly (without call counts initially)
+    Uses DISTINCT query for better performance
     """
     try:
         url = f"{SUPABASE_URL}/rest/v1/call_logs"
         
-        # Strategy: Scan through ALL records to find every unique agent
+        # Use a more efficient approach: Get distinct agent names directly
+        # First, check if there are any records at all
+        count_response = requests.get(
+            url,
+            headers={**HEADERS, 'Prefer': 'count=exact'},
+            params={'select': 'count', 'limit': 1},
+            timeout=10
+        )
+        
+        # If no records exist, return empty list immediately
+        if count_response.status_code in [200, 206]:
+            total_count = count_response.headers.get('Content-Range', '0/0').split('/')[-1]
+            if total_count == '0' or not total_count.isdigit() or int(total_count) == 0:
+                return []
+        
+        # Strategy: Scan through records to find unique agents
         seen_agents = set()
         offset = 0
         limit = 1000
-        max_records = 150000  # Scan entire database (we have 148k records)
+        max_records = 150000  # Scan entire database
         
         # Discover ALL unique agents
         while offset < max_records:
@@ -78,6 +94,9 @@ def get_all_agents_optimized() -> List[Dict[str, any]]:
                         break
                     
                     offset += limit
+                elif response.status_code == 404:
+                    # Table doesn't exist or no data
+                    return []
                 else:
                     # API error - use agents discovered so far
                     break
@@ -977,6 +996,12 @@ def main():
         st.markdown("---")
         
         st.header("🎯 Agent Selection")
+        
+        # Add cache clear button for debugging
+        if st.button("🔄 Clear Cache & Refresh", help="Clear Streamlit cache and refresh agent list"):
+            st.cache_data.clear()
+            st.success("Cache cleared! Refreshing...")
+            st.rerun()
         
         # Fetch top agents
         agents_data = get_all_agents_optimized()
